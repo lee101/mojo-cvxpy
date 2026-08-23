@@ -8,7 +8,7 @@ comptime FPtr = Pointer[Float64, MutUntrackedOrigin]
 comptime IPtr = Pointer[Int64, MutUntrackedOrigin]
 comptime I32Ptr = Pointer[Int32, MutUntrackedOrigin]
 comptime PARALLEL_ROWS = 65_536
-comptime PARALLEL_NONZEROS = 1_000_000
+comptime PARALLEL_NONZEROS = 250_000
 comptime MAX_WORKERS = 8
 
 
@@ -25,16 +25,18 @@ def csr_matvec_rows_i64(
     for row in range(start, stop):
         var cursor = Int(indptr[unsafe_offset=row])
         var end = Int(indptr[unsafe_offset=row + 1])
-        var vector_end = end - (end - cursor) % W
-        var totals = SIMD[DType.float64, W](0.0)
-        while cursor < vector_end:
-            var columns = indices.unsafe_load[width=W, alignment=1](cursor)
-            totals += (
-                data.unsafe_load[width=W, alignment=1](cursor)
-                * vector.unsafe_gather(columns)
-            )
-            cursor += W
-        var total = totals.reduce_add()
+        var total = 0.0
+        if end - cursor >= W:
+            var vector_end = end - (end - cursor) % W
+            var totals = SIMD[DType.float64, W](0.0)
+            while cursor < vector_end:
+                var columns = indices.unsafe_load[width=W, alignment=1](cursor)
+                totals += (
+                    data.unsafe_load[width=W, alignment=1](cursor)
+                    * vector.unsafe_gather(columns)
+                )
+                cursor += W
+            total = totals.reduce_add()
         while cursor < end:
             total += data[unsafe_offset=cursor] * vector[
                 unsafe_offset=Int(indices[unsafe_offset=cursor])
@@ -56,16 +58,18 @@ def csr_matvec_rows_i32(
     for row in range(start, stop):
         var cursor = Int(indptr[unsafe_offset=row])
         var end = Int(indptr[unsafe_offset=row + 1])
-        var vector_end = end - (end - cursor) % W
-        var totals = SIMD[DType.float64, W](0.0)
-        while cursor < vector_end:
-            var columns = indices.unsafe_load[width=W, alignment=1](cursor)
-            totals += (
-                data.unsafe_load[width=W, alignment=1](cursor)
-                * vector.unsafe_gather(columns)
-            )
-            cursor += W
-        var total = totals.reduce_add()
+        var total = 0.0
+        if end - cursor >= W:
+            var vector_end = end - (end - cursor) % W
+            var totals = SIMD[DType.float64, W](0.0)
+            while cursor < vector_end:
+                var columns = indices.unsafe_load[width=W, alignment=1](cursor)
+                totals += (
+                    data.unsafe_load[width=W, alignment=1](cursor)
+                    * vector.unsafe_gather(columns)
+                )
+                cursor += W
+            total = totals.reduce_add()
         while cursor < end:
             total += data[unsafe_offset=cursor] * vector[
                 unsafe_offset=Int(indices[unsafe_offset=cursor])

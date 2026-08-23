@@ -95,7 +95,18 @@ def _csc(matrix) -> sp.csc_array:
 
 
 def _csr_matvec(matrix, vector) -> np.ndarray:
-    csr = _csr(matrix)
+    if (
+        getattr(matrix, "format", None) == "csr"
+        and matrix.dtype == np.float64
+        and matrix.indices.dtype in (np.dtype(np.int32), np.dtype(np.int64))
+        and matrix.indptr.dtype == matrix.indices.dtype
+        and matrix.data.flags.c_contiguous
+        and matrix.indices.flags.c_contiguous
+        and matrix.indptr.flags.c_contiguous
+    ):
+        csr = matrix
+    else:
+        csr = _csr(matrix)
     vector = f64(vector)
     if vector.ndim != 1 or vector.size != csr.shape[1]:
         raise ValueError("dimension mismatch")

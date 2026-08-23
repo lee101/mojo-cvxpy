@@ -80,9 +80,9 @@ CVXPY 1.9.2, and Python 3.13.14. Times are the best of three warm runs on a
 
 | case | mojo-cvxpy | CVXPY | result |
 | --- | ---: | ---: | ---: |
-| reduce problem-data tensor (500k triplets) | 105.84 ms | 130.25 ms | 1.23x faster |
-| apply parameter vector and rebuild CSC | 4.28 ms | 7.08 ms | 1.66x faster |
-| 20 cached parameter applications | 120.61 ms | 246.96 ms | 2.05x faster |
+| reduce problem-data tensor (500k triplets) | 63.99 ms | 74.23 ms | 1.16x faster |
+| apply parameter vector and rebuild CSC | 0.38 ms | 4.52 ms | 11.84x faster |
+| 20 cached parameter applications | 27.91 ms | 174.95 ms | 6.27x faster |
 
 The one-time condensation preserves SciPy's native 32- or 64-bit index buffers
 across the ABI. For CSC input, Mojo counts source rows and scatters directly
@@ -106,10 +106,11 @@ exports cannot be parametric. The wrapper reconstructs mutable
 functions.
 
 Sparse input uses SciPy's CSR layout: contiguous `float64` data with native
-`int32` or `int64` column indices and row pointers. Long rows use native-width
-SIMD loads, an indexed gather, and a scalar remainder loop. Large matvecs are
-split across a bounded CPU worker pool; smaller inputs stay serial. Condensed
-tensor values are already
+`int32` or `int64` column indices and row pointers. Eligible CSR buffers pass
+directly across the FFI boundary without normalization or copying. Long rows
+use native-width SIMD loads, an indexed gather, and a scalar remainder loop;
+short rows skip SIMD setup. Large matvecs are split across a bounded CPU worker
+pool; smaller inputs stay serial. Condensed tensor values are already
 ordered as the eventual solver matrix's CSC data, so the wrapper attaches the
 original row-index and column-pointer arrays without another transpose or
 sort. All allocations and lifetimes remain owned by NumPy/SciPy; Mojo neither

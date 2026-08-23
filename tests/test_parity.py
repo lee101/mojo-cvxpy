@@ -222,7 +222,7 @@ def test_apply_accepts_noncontiguous_parameter_buffer():
 
 def test_apply_reduced_tensor_parallel_threshold_matches_upstream():
     rows = 70_000
-    entries_per_row = 16
+    entries_per_row = 5
     nonzeros = rows * entries_per_row
     indptr = np.arange(
         0, nonzeros + 1, entries_per_row, dtype=np.int32
@@ -237,6 +237,34 @@ def test_apply_reduced_tensor_parallel_threshold_matches_upstream():
         np.arange(rows, dtype=np.int64),
         np.array([0, rows], dtype=np.int64),
         (rows, 1),
+    )
+    expected = upstream.get_matrix_from_tensor(
+        reduced,
+        param,
+        1,
+        with_offset=False,
+        problem_data_index=problem_data_index,
+    )
+    got = mcp.get_matrix_from_tensor(
+        reduced,
+        param,
+        1,
+        with_offset=False,
+        problem_data_index=problem_data_index,
+    )
+    assert_sparse_equal(got[0], expected[0])
+
+
+def test_apply_reuses_noncanonical_csr_buffers_without_changing_result():
+    indices = np.array([3, 1, 3, 0, 2], dtype=np.int32)
+    indptr = np.array([0, 3, 5], dtype=np.int32)
+    data = np.array([2.0, -1.0, 0.5, 4.0, -3.0])
+    reduced = sp.csr_array((data, indices, indptr), shape=(2, 4))
+    param = np.array([1.5, -2.0, 0.25, 3.0])
+    problem_data_index = (
+        np.array([0, 1], dtype=np.int64),
+        np.array([0, 2], dtype=np.int64),
+        (2, 1),
     )
     expected = upstream.get_matrix_from_tensor(
         reduced,
