@@ -1,11 +1,12 @@
 """Sparse canonicalization kernels exposed through a stable C ABI."""
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
+from std.runtime import initialize_runtime
 from std.sys.info import num_physical_cores, simd_width_of as simdwidthof
 
-comptime FPtr = UnsafePointer[Float64, AnyOrigin[mut=True]]
-comptime IPtr = UnsafePointer[Int64, AnyOrigin[mut=True]]
-comptime I32Ptr = UnsafePointer[Int32, AnyOrigin[mut=True]]
+comptime FPtr = Pointer[Float64, MutUntrackedOrigin]
+comptime IPtr = Pointer[Int64, MutUntrackedOrigin]
+comptime I32Ptr = Pointer[Int32, MutUntrackedOrigin]
 comptime PARALLEL_ROWS = 65_536
 comptime PARALLEL_NONZEROS = 1_000_000
 comptime MAX_WORKERS = 8
@@ -22,22 +23,24 @@ def csr_matvec_rows_i64(
 ):
     comptime W = simdwidthof[DType.float64]()
     for row in range(start, stop):
-        var cursor = Int(indptr[row])
-        var end = Int(indptr[row + 1])
+        var cursor = Int(indptr[unsafe_offset=row])
+        var end = Int(indptr[unsafe_offset=row + 1])
         var vector_end = end - (end - cursor) % W
         var totals = SIMD[DType.float64, W](0.0)
         while cursor < vector_end:
-            var columns = indices.load[width=W, alignment=1](cursor)
+            var columns = indices.unsafe_load[width=W, alignment=1](cursor)
             totals += (
-                data.load[width=W, alignment=1](cursor)
-                * vector.gather(columns)
+                data.unsafe_load[width=W, alignment=1](cursor)
+                * vector.unsafe_gather(columns)
             )
             cursor += W
         var total = totals.reduce_add()
         while cursor < end:
-            total += data[cursor] * vector[Int(indices[cursor])]
+            total += data[unsafe_offset=cursor] * vector[
+                unsafe_offset=Int(indices[unsafe_offset=cursor])
+            ]
             cursor += 1
-        result[row] = total
+        result[unsafe_offset=row] = total
 
 
 def csr_matvec_rows_i32(
@@ -51,22 +54,24 @@ def csr_matvec_rows_i32(
 ):
     comptime W = simdwidthof[DType.float64]()
     for row in range(start, stop):
-        var cursor = Int(indptr[row])
-        var end = Int(indptr[row + 1])
+        var cursor = Int(indptr[unsafe_offset=row])
+        var end = Int(indptr[unsafe_offset=row + 1])
         var vector_end = end - (end - cursor) % W
         var totals = SIMD[DType.float64, W](0.0)
         while cursor < vector_end:
-            var columns = indices.load[width=W, alignment=1](cursor)
+            var columns = indices.unsafe_load[width=W, alignment=1](cursor)
             totals += (
-                data.load[width=W, alignment=1](cursor)
-                * vector.gather(columns)
+                data.unsafe_load[width=W, alignment=1](cursor)
+                * vector.unsafe_gather(columns)
             )
             cursor += W
         var total = totals.reduce_add()
         while cursor < end:
-            total += data[cursor] * vector[Int(indices[cursor])]
+            total += data[unsafe_offset=cursor] * vector[
+                unsafe_offset=Int(indices[unsafe_offset=cursor])
+            ]
             cursor += 1
-        result[row] = total
+        result[unsafe_offset=row] = total
 
 
 @export("mcvx_csr_matvec")
@@ -79,6 +84,7 @@ def mcvx_csr_matvec(
     rows: Int,
     nonzeros: Int,
 ) abi("C"):
+    initialize_runtime()
     var data = FPtr(unsafe_from_address=data_addr)
     var indices = IPtr(unsafe_from_address=indices_addr)
     var indptr = IPtr(unsafe_from_address=indptr_addr)
@@ -90,7 +96,7 @@ def mcvx_csr_matvec(
         else 1
     )
 
-    @parameter
+    @__parameter
     def process(worker: Int):
         var start = worker * rows // workers
         var stop = (worker + 1) * rows // workers
@@ -114,6 +120,7 @@ def mcvx_csr_matvec_i32(
     rows: Int,
     nonzeros: Int,
 ) abi("C"):
+    initialize_runtime()
     var data = FPtr(unsafe_from_address=data_addr)
     var indices = I32Ptr(unsafe_from_address=indices_addr)
     var indptr = I32Ptr(unsafe_from_address=indptr_addr)
@@ -125,7 +132,7 @@ def mcvx_csr_matvec_i32(
         else 1
     )
 
-    @parameter
+    @__parameter
     def process(worker: Int):
         var start = worker * rows // workers
         var stop = (worker + 1) * rows // workers
@@ -150,13 +157,13 @@ def mcvx_csr_nonempty_rows(
     var old_rows = IPtr(unsafe_from_address=old_rows_addr)
     var reduced_indptr = IPtr(unsafe_from_address=reduced_indptr_addr)
     var count = 0
-    reduced_indptr[0] = 0
+    reduced_indptr[unsafe_offset=0] = 0
     for row in range(rows):
-        var end = indptr[row + 1]
-        if end > indptr[row]:
-            old_rows[count] = Int64(row)
+        var end = indptr[unsafe_offset=row + 1]
+        if end > indptr[unsafe_offset=row]:
+            old_rows[unsafe_offset=count] = Int64(row)
             count += 1
-            reduced_indptr[count] = end
+            reduced_indptr[unsafe_offset=count] = end
     return count
 
 
@@ -171,13 +178,13 @@ def mcvx_csr_nonempty_rows_i32(
     var old_rows = IPtr(unsafe_from_address=old_rows_addr)
     var reduced_indptr = I32Ptr(unsafe_from_address=reduced_indptr_addr)
     var count = 0
-    reduced_indptr[0] = 0
+    reduced_indptr[unsafe_offset=0] = 0
     for row in range(rows):
-        var end = indptr[row + 1]
-        if end > indptr[row]:
-            old_rows[count] = Int64(row)
+        var end = indptr[unsafe_offset=row + 1]
+        if end > indptr[unsafe_offset=row]:
+            old_rows[unsafe_offset=count] = Int64(row)
             count += 1
-            reduced_indptr[count] = end
+            reduced_indptr[unsafe_offset=count] = end
     return count
 
 
@@ -205,29 +212,32 @@ def mcvx_csc_compact(
     var old_rows = IPtr(unsafe_from_address=old_rows_addr)
 
     for cursor in range(nonzeros):
-        scratch[Int(row_indices[cursor])] += 1
+        scratch[
+            unsafe_offset=Int(row_indices[unsafe_offset=cursor])
+        ] += 1
 
     var count = 0
     var cursor = Int64(0)
-    reduced_indptr[0] = 0
+    reduced_indptr[unsafe_offset=0] = 0
     for row in range(rows):
-        var row_count = scratch[row]
+        var row_count = scratch[unsafe_offset=row]
         if row_count > 0:
-            old_rows[count] = Int64(row)
-            scratch[row] = cursor
+            old_rows[unsafe_offset=count] = Int64(row)
+            scratch[unsafe_offset=row] = cursor
             cursor += row_count
             count += 1
-            reduced_indptr[count] = cursor
+            reduced_indptr[unsafe_offset=count] = cursor
 
     for col in range(cols):
         for source in range(
-            Int(col_indptr[col]), Int(col_indptr[col + 1])
+            Int(col_indptr[unsafe_offset=col]),
+            Int(col_indptr[unsafe_offset=col + 1]),
         ):
-            var row = Int(row_indices[source])
-            var target = Int(scratch[row])
-            reduced_data[target] = data[source]
-            reduced_indices[target] = Int64(col)
-            scratch[row] += 1
+            var row = Int(row_indices[unsafe_offset=source])
+            var target = Int(scratch[unsafe_offset=row])
+            reduced_data[unsafe_offset=target] = data[unsafe_offset=source]
+            reduced_indices[unsafe_offset=target] = Int64(col)
+            scratch[unsafe_offset=row] += 1
     return count
 
 
@@ -255,27 +265,30 @@ def mcvx_csc_compact_i32(
     var old_rows = IPtr(unsafe_from_address=old_rows_addr)
 
     for cursor in range(nonzeros):
-        scratch[Int(row_indices[cursor])] += 1
+        scratch[
+            unsafe_offset=Int(row_indices[unsafe_offset=cursor])
+        ] += 1
 
     var count = 0
     var cursor = Int32(0)
-    reduced_indptr[0] = 0
+    reduced_indptr[unsafe_offset=0] = 0
     for row in range(rows):
-        var row_count = scratch[row]
+        var row_count = scratch[unsafe_offset=row]
         if row_count > 0:
-            old_rows[count] = Int64(row)
-            scratch[row] = cursor
+            old_rows[unsafe_offset=count] = Int64(row)
+            scratch[unsafe_offset=row] = cursor
             cursor += row_count
             count += 1
-            reduced_indptr[count] = cursor
+            reduced_indptr[unsafe_offset=count] = cursor
 
     for col in range(cols):
         for source in range(
-            Int(col_indptr[col]), Int(col_indptr[col + 1])
+            Int(col_indptr[unsafe_offset=col]),
+            Int(col_indptr[unsafe_offset=col + 1]),
         ):
-            var row = Int(row_indices[source])
-            var target = Int(scratch[row])
-            reduced_data[target] = data[source]
-            reduced_indices[target] = Int32(col)
-            scratch[row] += 1
+            var row = Int(row_indices[unsafe_offset=source])
+            var target = Int(scratch[unsafe_offset=row])
+            reduced_data[unsafe_offset=target] = data[unsafe_offset=source]
+            reduced_indices[unsafe_offset=target] = Int32(col)
+            scratch[unsafe_offset=row] += 1
     return count
