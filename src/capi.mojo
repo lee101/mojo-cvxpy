@@ -1,6 +1,5 @@
 """Sparse canonicalization kernels exposed through a stable C ABI."""
 
-from max.algorithm import parallelize
 from std.runtime import initialize_runtime
 from std.sys.info import num_physical_cores, simd_width_of as simdwidthof
 
@@ -99,19 +98,19 @@ def mcvx_csr_matvec(
         if rows >= PARALLEL_ROWS and nonzeros >= PARALLEL_NONZEROS
         else 1
     )
-
-    @__parameter
-    def process(worker: Int):
-        var start = worker * rows // workers
-        var stop = (worker + 1) * rows // workers
-        csr_matvec_rows_i64(
-            data, indices, indptr, vector, result, start, stop
-        )
-
     if workers > 1:
-        parallelize[process](workers, workers)
+        for worker in range(workers):
+            csr_matvec_rows_i64(
+                data,
+                indices,
+                indptr,
+                vector,
+                result,
+                worker * rows // workers,
+                (worker + 1) * rows // workers,
+            )
     else:
-        process(0)
+        csr_matvec_rows_i64(data, indices, indptr, vector, result, 0, rows)
 
 
 @export("mcvx_csr_matvec_i32")
@@ -135,19 +134,19 @@ def mcvx_csr_matvec_i32(
         if rows >= PARALLEL_ROWS and nonzeros >= PARALLEL_NONZEROS
         else 1
     )
-
-    @__parameter
-    def process(worker: Int):
-        var start = worker * rows // workers
-        var stop = (worker + 1) * rows // workers
-        csr_matvec_rows_i32(
-            data, indices, indptr, vector, result, start, stop
-        )
-
     if workers > 1:
-        parallelize[process](workers, workers)
+        for worker in range(workers):
+            csr_matvec_rows_i32(
+                data,
+                indices,
+                indptr,
+                vector,
+                result,
+                worker * rows // workers,
+                (worker + 1) * rows // workers,
+            )
     else:
-        process(0)
+        csr_matvec_rows_i32(data, indices, indptr, vector, result, 0, rows)
 
 
 @export("mcvx_csr_nonempty_rows")
