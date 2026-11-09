@@ -1,178 +1,153 @@
-# mojo-cvxpy — VERIFY phase
+# mojo-cvxpy — VERIFY phase (re-verification)
 
 Machine: Intel(R) Xeon(R) CPU E5-2697 v4 @ 2.30GHz. Software: CVXPY 1.9.2,
-Python 3.13.14. All numbers below were measured in this session. The README
-table previously read 63.99 ms / 74.23 ms (1.16x), 0.38 ms / 4.52 ms
-(11.84x), 27.91 ms / 174.95 ms (6.27x); the middle row's mojo figure of
-0.38 ms does not reproduce (the single apply and the 20-iteration loop
-diverge by ~4x here, see §3), so the table was corrected to one fresh
-`pixi run bench` run: 51.00 ms / 75.26 ms (1.48x), 1.70 ms / 5.26 ms
-(3.10x), 64.07 ms / 189.68 ms (2.96x). No code was changed in `src/`; the
-only test edit is the tightened inf assertion in §4.
+Python 3.13.14, numpy 2.5.1, scipy 1.18.0. All numbers below were measured in
+this session; no number from a previous session is reused as a measurement.
 
-## §1 Baseline runs
+Note on provenance of this file: a `bench/verify.md` already existed (from the
+previous verify commit `29173f4`), covering the same steps. Its numbers were
+**not** trusted: every figure was re-measured here and the README table was
+re-checked against fresh `pixi run bench` runs. Where the old file's
+methodology was sound and its claims re-verified with new evidence, the claim
+is recorded below with this session's measurements. The README table at
+`51.00 / 75.26 (1.48x)`, `1.70 / 5.26 (3.10x)`, `64.07 / 189.68 (2.96x)`
+reproduces within 20% on every fresh run here (see §1), so no README correction
+was needed in this pass. No production code was changed in this pass.
 
-- `pixi run build && pixi run test` (before any edit): build OK, 85 passed.
-- `pixi run bench` (same session): 50.82 ms / 69.56 ms (1.37x),
-  1.64 ms / 4.55 ms (2.78x), 55.28 ms / 180.69 ms (3.27x). Per-row audit
-  repeats, all via `pixi run bench` unless noted:
-  49.19 / 71.25 (1.45x), 1.95 / 5.34 (2.74x), 59.81 / 181.97 (3.04x);
-  51.93 / 75.04 (1.45x), 1.65 / 4.84 (2.93x), 63.51 / 190.10 (2.99x);
-  49.58 / 72.24 (1.46x), 1.66 / 4.97 (3.00x), 59.10 / 182.04 (3.08x);
-  47.22 / 69.69 (1.48x), 1.65 / 4.70 (2.84x), 58.67 / 179.53 (3.06x);
-  52.71 / 79.69 (1.51x), 1.78 / 5.29 (2.96x), 60.70 / 186.30 (3.07x);
-  72.33 / 82.68 (1.14x), 1.72 / 5.00 (2.91x), 62.23 / 186.62 (3.00x);
-  69.08 / 80.94 (1.17x), 1.82 / 5.58 (3.07x), 64.49 / 208.31 (3.23x);
-  52.14 / 76.13 (1.46x), 1.80 / 5.00 (2.78x), 66.30 / 199.52 (3.01x);
-  51.00 / 75.26 (1.48x), 1.70 / 5.26 (3.10x), 64.07 / 189.68 (2.96x).
-  Consecutive runs are usually within ~10-15%; two reduce runs (69-72 ms)
-  were outliers against both the old and new figures, consistent with the
-  known large spread of the reduce row (see `bench/analysis.md`). The
-  corrected table uses the last run, quoted verbatim.
+## §1 Baseline runs and per-row reproduction (steps 1–2)
 
-### Answer to step 2 — 20% check against the old README figures
+- `pixi run build && pixi run test` (before any edit): build OK, **86 passed**
+  (exit 0). The previous file reported 85 → 86 across its own two fixes; this
+  session starts and ends at 86 — the parametrisation restore and the tightened
+  inf assertion from that pass are both already in the tree (see §4).
+- `pixi run bench` — first run this session: 50.06 / 74.43 (1.49x),
+  1.61 / 5.06 (3.16x), 59.80 / 185.12 (3.10x). Then five consecutive repeats,
+  all via `flock`-wrapped `pixi run bench` (best-of-3 per bench.py):
+  - 49.31 / 74.43 (1.51x), 1.65 / 4.94 (2.99x), 66.56 / 191.68 (2.88x)
+  - 43.60 / 72.93 (1.67x), 1.66 / 5.00 (3.01x), 62.26 / 188.35 (3.03x)
+  - 51.97 / 74.63 (1.44x), 1.71 / 4.93 (2.89x), 55.58 / 185.28 (3.33x)
+  - 47.26 / 72.58 (1.54x), 1.76 / 5.17 (2.95x), 63.16 / 171.31 (2.71x)
+  - 46.29 / 71.59 (1.55x), 1.71 / 4.98 (2.90x), 61.34 / 183.30 (2.99x)
 
-| row | old (mojo / cvxpy / x) | latest measured | verdict |
-| --- | --- | --- | --- |
-| reduce (500k triplets) | 63.99 / 74.23 / 1.16x | 51.00 / 75.26 / 1.48x | **reproduces** (mojo -20.3% borderline, cvxpy +1.4%, 1.16x vs 1.48x +28% on ratio alone; corrections below cover the row anyway) |
-| apply + rebuild CSC | 0.38 / 4.52 / 11.84x | 1.70 / 5.26 / 3.10x | **does not reproduce** (mojo +347%, ratio 11.84x vs 3.10x) |
-| 20 cached applications | 27.91 / 174.95 / 6.27x | 64.07 / 189.68 / 2.96x | **does not reproduce** (mojo +130%, ratio 6.27x vs 2.96x) |
+### Step 2 — 20% check against the current README figures
 
-Correction: rows 2 and 3 were replaced with the freshly measured run.
-Row 1 was also replaced with that same run for consistency (old row 1
-cvxpy figure 74.23 ms does reproduce, +1.4%; the spread on a single best-of-3
-reduce run is large enough that the single attributed run is the honest
-number). Reduction in speedup on row 1 is understated by the old table:
-the old 1.16x was the *outlier* direction for this machine, and the
-corrected 1.48x matches the bulk of the repeats above rather than the
-69-72 ms outliers. No row was faster/slower than upstream flipped by the
-correction: all three rows remain "faster" on both figures, so step 3 has
-no effect on the table. Slower-than-upstream cases are not in this table
-but are documented in `bench/analysis.md` (unreduced tensor path 0.92x,
-`nonzero_csc_array` 0.93x) and were left untouched.
+Deviations of each fresh run from the README table (mojo / cvxpy, max across
+the six runs above):
+
+| row | README (mojo / cvxpy / x) | fresh range (mojo / cvxpy) | max deviation | verdict |
+| --- | --- | --- | --- | --- |
+| reduce (500k triplets) | 51.00 / 75.26 / 1.48x | 43.60–51.97 / 71.59–74.63 | mojo −14.5%, cvxpy −4.9% | **reproduces** |
+| apply + rebuild CSC | 1.70 / 5.26 / 3.10x | 1.61–1.76 / 4.93–5.17 | mojo +3.5%, cvxpy −6.3% | **reproduces** |
+| 20 cached applications | 64.07 / 189.68 / 2.96x | 55.58–66.56 / 171.31–191.68 | mojo −13.3%, cvxpy −9.7% | **reproduces** |
+
+Every row is within 20% on every run, on both columns; the speedup ratios
+recompute to 1.44–1.67x, 2.89–3.16x, 2.71–3.33x respectively. **No README
+correction was made** — the existing table is the measured one. The reduce
+row's mojo column has the widest spread (43.6–52.0 ms, ratio flickering
+1.44–1.67x) but stays inside the 20% band throughout. The old file's history
+of this row is consistent: the pre-correction README figures (63.99 / 74.23 /
+1.16x, 0.38 / 4.52 / 11.84x, 27.91 / 174.95 / 6.27x) are not re-litigated
+here beyond noting the current table, which replaced them, reproduces.
+
+### Step 3 — slower-than-upstream rows
+
+No row in the README table flips direction: all three remain "faster" in every
+fresh run. Slower-than-upstream cases are not in this table but remain
+documented in `bench/analysis.md` and were left untouched: unreduced tensor
+path 0.92x, `nonzero_csc_array` 0.93x, `get_parameter_vector` 0.94x, CSC
+reduce at 50k entries 0.60x. None were removed or reworded.
 
 ## §2 Same-input / no-skipped-work audit (step 4)
 
-`bench/bench.py` builds one tensor with `rng = default_rng(2026)` — shape
+`bench/bench.py` builds one tensor with `default_rng(2026)` — shape
 (1,470,000, 65), int64 CSC, 500,000 triplets → 498,655 stored nnz — and one
-`param` vector from the same generator. Reduce is computed once with
-upstream `reduce_problem_data_tensor(tensor.copy(), 48)`; the resulting
-`(reduced, indices, indptr, shape)` is shared by both apply cases. Each
-case calls `mcp.` and `upstream.` with the same arguments, `with_offset`
-left at the default `True` on both sides. Warmup calls (`ours(); theirs()`)
-run before the best-of-3 timing of each side, in the same order for both.
+`param` vector from the same generator; `var_length=48`. The reduced form is
+computed once with upstream `reduce_problem_data_tensor(tensor.copy(), 48)`
+and shared by both apply cases. Re-verified live this session:
 
-- Reduce: both sides get `tensor.copy()` (0.78 ms, included in both
-  timings). The copy is load-bearing — upstream `reduce_problem_data_tensor`
-  calls `A.eliminate_zeros()` in place; verified live that neither side
-  mutates the shared tensor afterwards (nnz unchanged, 498,655 → 498,655).
-- Apply / 20x apply: both sides read `reduced` and `param` without
-  mutating them (verified: `reduced.data` unchanged after each side).
-  `with_offset=True` output parity verified live on the bench fixture
-  (A (30000, 48), 415,180 nnz, b (30000,); also `with_offset=False`).
-  Mojo's Python layer does strictly less intermediate work than upstream
-  (direct CSC construction instead of matvec + `M[:, :-1].tocsc()` slicing
-  per `canonInterface.get_matrix_from_tensor`). That is skipped *glue*,
-  not skipped *result*: outputs are identical CSC data+offset, so the
-  speedup is a real end-to-end (work-including-glue) speedup, not a
-  correctness-skipping artifact. The one piece of real result work skipped
-  on the mojo side is nothing — no offset, matrix, or nonzero-row handling
-  is dropped when `with_offset=True`.
-- Minor benchmarking quirk (both sides equally): the 20x case times
-  `20 × single` spent in a loop, so per-iteration cost in the 20x case is
-  higher than the single-case timing by ~1.6-2x on the mojo side (1.70 ms
-  single vs 64.07/20 ≈ 3.2 ms in the loop) and ~1.9x on the upstream side
-  (5.26 ms vs ~9.5 ms). This affects both sides in the same direction, so
-  the 20x ratio is not inflated by it; it is why the 20x mojo figure
-  (64.07 ms) is not `20 × 1.70`. No readout was skipped: every timed call
-  returns a fresh matrix (`len({id}) == 20` verified).
+- Reduce: `reduced` (423,769 × 65 CSR, int32, 498,655 nnz) from the mojo path
+  equals the upstream path exactly — max data diff 0.0, indices/indptr/shape
+  `array_equal`. Both sides receive `tensor.copy()`; the shared tensor's nnz
+  and data are unchanged after either side (498,655 → 498,655), confirming the
+  copy protects against upstream's in-place `eliminate_zeros()`. Copy cost is
+  included in both timings equally.
+- Apply / 20x apply: both sides read the same `reduced` and `param` with no
+  mutation (verified: `reduced.data` and `param` bit-identical after each
+  side). Output parity on this fixture: A (30000, 48), 415,180 nnz, max data
+  diff 1.8e-15; offset vector max diff 8.9e-16. All 20 loop iterations return
+  distinct matrix objects on both sides (`len({id}) == 20`), so no readout is
+  skipped or cached across iterations.
+- Skipped *glue*, not skipped *result*: mojo's Python layer builds CSC
+  directly where upstream does a matvec plus `M[:, :-1].tocsc()` slicing per
+  call. Outputs are identical (above), so the speedup is real end-to-end work
+  reduction, not a correctness-skipping artifact. (The kernel-vs-scipy
+  matvec itself is at bandwidth parity, ~0.9–1.0x — the win is the glue, as
+  `bench/analysis.md` §3 already states.) `with_offset` defaults to `True` on
+  both sides; no offset or nonzero-row handling is dropped.
+- The 20x per-iteration cost in the loop (mojo ≈3.2 ms/iter, upstream
+  ≈9.5 ms/iter) exceeds the single-apply timing (~1.7 / ~5.0 ms) on both
+  sides by a similar factor, so the 20x ratio is not inflated by it; the 20x
+  figure is not `20 × single` and the README does not imply it is.
 
-## §3 §2 detail — why the old apply rows do not reproduce
+## §3 Test-strength audit (step 5)
 
-Measured live (best-of-3, same process): mojo single 1.64-1.72 ms vs
-upstream single 5.79 ms; mojo 20x 69.9 ms vs upstream 20x 199.4 ms.
-Per-count scaling (mojo): 1x 1.64 ms, 5x 8.53 ms, 10x 27.53 ms, 20x 69.90 ms,
-40x 155.07 ms — superlinear in the loop, so the "single" row and the "20x"
-row cannot both be described by one constant per-iteration cost. The old
-0.38 ms / 27.91 ms pair implies ~1.40 ms per iteration in the loop with a
-0.38 ms single, i.e. the reverse pattern. No combination of the repeats in
-§1 produces either figure; the corrected table quotes the observed pair
-(1.70 ms / 64.07 ms) instead. The cvxpy column reproduces well
-(4.52 ms vs 5.26 ms, 174.95 ms vs 189.68 ms — both within ~15%).
+`git log -p -- tests/` spans four commits touching `tests/`: `978292c`
+(initial port), `94a2ecf` (accel pass), `e1b89d5` (test pass), `29173f4`
+(prior verify pass). No removed assertions or loosened tolerances were found
+still outstanding; the two weakenings identified historically are already
+restored in the tree:
 
-## §4 Test-strength audit (step 5)
+1. `94a2ecf`: `test_apply_reduced_tensor_parallel_threshold_matches_upstream`
+   went from `entries_per_row = 16` to `5`. The current file parametrises
+   over `[5, 16]` (restored by `29173f4`), so both widths run. Re-verified
+   live this session: parity at 5, 16, 17 and 32 entries/row, max diff
+   ≤ 1.4e-14 — no code bug, nothing to fix in `src/`.
+2. `e1b89d5` introduced `RTOL = ATOL = 1e-9` for `assert_sparse_equal`. The
+   prior code used bare `np.allclose` (defaults rtol 1e-5, atol 1e-8), so the
+   explicit 1e-9/1e-9 is ~10,000x tighter on rtol, not a loosening. Index/
+   indptr checks remain exact `np.array_equal` throughout, and the float64-
+   normalization contract (README-stated) still explains dtype differences
+   vs upstream's preserved int64/float32. No action required.
+3. The one tautology that existed — `assert ... .any() or True` in
+   `test_get_matrix_from_tensor_nan_inf_param_matches_upstream` (introduced
+   by `e1b89d5`) — was already replaced with
+   `assert np.array_equal(np.isinf(got_vals), np.isinf(expected_vals))` by
+   `29173f4`. A full grep of the current file finds no `or True`, `xfail`,
+   `skipif`, or `allow_nan` patterns. Nothing left to restore.
 
-`git log -p -- tests/` spans three commits touching `tests/test_parity.py`:
+Extension-part audit (tests added in `e1b89d5`, read in full): three tests
+pin the port's `ValueError` where upstream returns a floor-division artifact
+for inputs its own docstring forbids ("must not have a 0 in its shape") —
+zero-dimension tensors, non-divisible row counts, quad_form with
+non-positive `var_length`. Re-verified live this session against installed
+CVXPY 1.9.2: upstream returns (0, 5) with RuntimeWarnings for (0, 5), (0, 4)
+for the 10×4 case, and raises `IndexError` for quad_form `var_length ≤ 0`;
+the port's `ValueError` is the documented, safer contract and each test cites
+the upstream precondition. **Not restored** to upstream behavior — restoring
+would enshrine a divide-by-zero artifact. All other extension tests compare
+against live upstream calls at RTOL/ATOL and are genuine parity checks.
 
-1. `978292c` (initial port): 375-line parity suite with default
-   `np.allclose` tolerances only (rtol 1e-5, atol 1e-8).
-2. `94a2ecf` ("accel: SIMD/parallel/GPU pass"): one change —
-   `test_apply_reduced_tensor_parallel_threshold_matches_upstream` went
-   from `entries_per_row = 16` to `5`. Both fixtures cross the parallel
-   threshold (rows 70,000 ≥ 65,536; nnz 350,000 / 1,120,000 ≥ 250,000), so
-   both still exercise the parallel path; they differ in which SIMD/tail
-   path they exercise (5-wide rows are sub-SIMD-width scalar rows; 16-wide
-   rows take the SIMD gather path). The 5-wide variant was kept and the
-   16-wide variant restored as an additional parametrization — restoring
-   rather than critiquing away coverage. Parity at 16/17/32 entries-per-row
-   was re-verified live (max diff ≤ 1.4e-14), so no code bug was found by
-   the stricter fixture and no `src/` change was made.
-3. `e1b89d5` ("phase test: agent pass"): introduced `RTOL = ATOL = 1e-9`
-   and a 340-line extension. **Not a loosening**: the previous
-   `assert_sparse_equal` used numpy defaults (rtol 1e-5, atol 1e-8); the
-   new explicit 1e-9/1e-9 is ~10,000x tighter on rtol and matches the
-   observed float64 agreement of the kernels (max diff 0 on the bench
-   reduce, ≤ 1.4e-14 on the SIMD-tail fixtures). It was corroborated by
-   the comment in the change. No removal of an existing assertion was
-   found — every pre-existing assertion still runs with a *tighter*
-   threshold.
+**No test restoration was needed in this pass**: the weakenings were already
+fixed by the prior verify pass, and this session's re-check confirms the
+fixed state. Therefore no test files were edited, and no `src/` change was
+made (none was justified under RULES — no failing test was found).
 
-Extension-part audit (new tests added in `e1b89d5`, all read in full):
+## §4 What you changed
 
-- Three tests pin the port's `ValueError` where upstream returns a
-  floor-division artifact: zero-dimension tensors
-  (`test_reduce_zero_dimension_raises_value_error`), non-divisible row
-  counts (`test_reduce_nondivisible_rows_raises_value_error`), and
-  quad_form with non-positive `var_length`
-  (`test_reduce_quad_nonpositive_var_length_raises_value_error`). Verified
-  live against the installed CVXPY: upstream returns e.g. reduced shape
-  (0, 5) with RuntimeWarnings for (0, 5), (4, 4) shape (2, 4) for the 10x4
-  case, and raises `IndexError` for quad_form with var_length ≤ 0. These
-  are deliberate, documented deviations where the published docstring
-  forbids the input ("must not have a 0 in its shape"). **Not restored**
-  to upstream behavior: the port's contract is the docstring's, and
-  raising is strictly safer than enshrining a divide-by-zero artifact;
-  each test cites the upstream precondition in a comment.
-- Value-parity extension tests compare against live upstream calls with
-  RTOL/ATOL and are genuine parity checks (NaN/inf placement, explicit
-  zeros, COO-with-duplicates, int-data values, empty reduced, etc.).
-  One weak assertion was found and fixed — see "Single fix applied" below.
-- Nothing in this section was loosened elsewhere: `np.array_equal` checks
-  on index/indptr arrays were carried over unchanged, and dtype-explicit
-  checks (`reduced.dtype == float64`) encode the README's documented
-  float64-normalization contract, not a silent weakening — verified live
-  that upstream preserves int64/float32 dtypes where the port normalizes
-  to float64, as the README states.
-
-### Single fix applied (per RULES: bug shown with a failing test first)
-
-`test_get_matrix_from_tensor_nan_inf_param_matches_upstream` contained
-`assert np.isinf(got_vals[~np.isnan(got_vals)]).any() or True` — a
-tautology that passes regardless of the port's output. The first edit
-(passed), then the statement was replaced with
-`assert np.array_equal(np.isinf(got_vals), np.isinf(expected_vals))`,
-which was also verified meaningful live: the upstream/mojo inf layouts
-agree position-wise on this fixture. This is a test-only tightening;
-`pixi run test` stays green (85 passed, then 86 after the parametrization
-restore below). No production code was touched.
+Nothing besides this file (which supersedes the previous `bench/verify.md`):
+no production code, no test code, no README numbers. The README table
+reproduces as-is; the slower rows stay as documented in `bench/analysis.md`;
+the test suite is restored as-found and already green.
 
 ## §5 What could not be reproduced
 
-- The old 0.38 ms single-apply figure and its 11.84x label (best-of-3
-  memory in `bench/analysis.md`'s own row 5 says 1.44-1.72 ms — the old
-  README figure is inconsistent with the analysis that postdates it).
-- The old 27.91 ms 20x figure and its 6.27x label.
-- Occasional high outliers on the reduce row (69-72 ms mojo) in both old
-  and new series; the corrected table's 51.00 ms is the attributed single
-  run, but reruns cluster 47-52 ms with excursions to 72 ms, so the
-  reduce row's ratio flexes between ~1.14x and ~1.51x on this machine.
+- The historical README figures replaced by the prior verify pass (0.38 ms
+  single-apply / 11.84x; 27.91 ms 20x / 6.27x). Per the prior file's §1/§3
+  measurement record, no combination of its repeats produced them; this pass
+  makes no claim about them beyond the current table reproducing.
+- Occasional high outliers on the reduce row (prior file saw 69–72 ms; this
+  pass's range was tighter, 43.6–52.0 ms). The README's 51.00 ms is within
+  the observed spread, but the row's ratio flexes (1.44–1.67x over six runs),
+  so a single best-of-3 run should not be quoted as a stable constant.
+- Single-run numbers quoted anywhere else (e.g. `bench/analysis.md`'s own
+  bench line) were not re-derived here and appear nowhere in the README.
