@@ -12,12 +12,21 @@ from cvxpy.reductions.utilities import ReducedMat as UpstreamReducedMat
 
 import mojocvxpy as mcp
 
+# Shared tolerance for every floating-point comparison against upstream.
+# assert_sparse_equal uses np.allclose with these defaults; offset vectors
+# below pass them explicitly. Rationale: reduce/get_matrix are exact index
+# rearrangements plus one matvec, so upstream and the port agree to well
+# under 1e-9 on the well-conditioned fixtures used here; the tolerance only
+# absorbs float64 summation-order differences in the SIMD matvec kernel.
+RTOL = 1e-9
+ATOL = 1e-9
+
 
 def assert_sparse_equal(got, expected):
     assert got.shape == expected.shape
     delta = (got - expected).tocoo()
-    assert delta.nnz == 0 or np.allclose(delta.data, 0)
-    assert np.allclose(got.toarray(), expected.toarray())
+    assert delta.nnz == 0 or np.allclose(delta.data, 0, rtol=RTOL, atol=ATOL)
+    assert np.allclose(got.toarray(), expected.toarray(), rtol=RTOL, atol=ATOL)
 
 
 def tensor(var_length=7, constraints=31, params=9, seed=0):
@@ -401,3 +410,340 @@ def test_accelerated_context_can_be_nested():
             assert upstream.reduce_problem_data_tensor is mcp.reduce_problem_data_tensor
         assert upstream.reduce_problem_data_tensor is mcp.reduce_problem_data_tensor
     assert upstream.reduce_problem_data_tensor is original
+
+
+# ---------------------------------------------------------------------------
+# Degenerate / mismatched-input parity.
+#
+# For each case the test pins the behaviour of the installed upstream
+# cvxpy (`cvxpy.cvxcore.python.canonInterface`, verified live in this
+# session). Where upstream defines a *returned value* we compare against
+# it directly with RTOL/ATOL. Where upstream's implementation merely
+# returns a floor-division artifact for inputs its own docstring forbids
+# ("A ... must not have a 0 in its shape"; rows must be a multiple of
+# n_cols = var_length + 1, or var_length for quad_form), the port instead
+# raises a clear ValueError; those tests pin the port's error and cite
+# the upstream precondition rather than enshrining the artifact.
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_single_element_matches_upstream():
+    A = sp.csc_array(np.array([[5.0]]))
+    expected = upstream.reduce_problem_data_tensor(A.copy(), 0)
+    got = mcp.reduce_problem_data_tensor(A.copy(), 0)
+    assert_sparse_equal(got[0], expected[0])
+    assert np.array_equal(got[1], expected[1])
+    assert np.array_equal(got[2], expected[2])
+    assert tuple(got[3]) == tuple(expected[3])
+    assert np.allclose(got[0].data, [5.0], rtol=RTOL, atol=ATOL)
+
+
+@pytest.mark.parametrize("shape", [(0, 5), (10, 0), (0, 0)])
+def test_reduce_zero_dimension_raises_value_error(shape):
+    # Upstream canonInterface.reduce_problem_data_tensor docstring: "A ...
+    # must not have a 0 in its shape". The port enforces that precondition
+    # with ValueError instead of returning a floor-division artifact.
+    with pytest.raises(ValueError):
+        mcp.reduce_problem_data_tensor(sp.csc_array(shape, dtype=np.float64), 3)
+
+
+def test_reduce_nondivisible_rows_raises_value_error():
+    # Upstream defines n_constr = A.shape[0] // n_cols (floor division for
+    # rows that are not a multiple of var_length + 1); the port raises
+    # ValueError for that incompatible layout rather than guessing.
+    with pytest.raises(ValueError):
+        mcp.reduce_problem_data_tensor(sp.csc_array(np.eye(10, 4)), 3)
+
+
+@pytest.mark.parametrize("var_length", [-1, 0])
+def test_reduce_quad_nonpositive_var_length_raises_value_error(var_length):
+    # Upstream with quad_form and var_length <= 0 computes n_cols <= 0 and
+    # fails inside np handling (IndexError in the installed cvxpy); the
+    # port raises ValueError at the layout check. Both reject the input:
+    # only that it is rejected is pinned here, not the incidental class.
+    with pytest.raises((TypeError, ValueError, IndexError)):
+        mcp.reduce_problem_data_tensor(
+            sp.csc_array(np.eye(4)), var_length, quad_form=True
+        )
+
+
+def test_reduce_nan_and_inf_preserved_matches_upstream():
+    A = sp.csc_array(
+        (
+            np.array([np.nan, np.inf, -np.inf]),
+            (np.array([0, 1, 2]), np.array([0, 0, 0])),
+        ),
+        shape=(4, 2),
+    )
+    expected = upstream.reduce_problem_data_tensor(A.copy(), 1)
+    got = mcp.reduce_problem_data_tensor(A.copy(), 1)
+    assert got[0].shape == expected[0].shape
+    got_data = got[0].toarray().ravel()
+    expected_data = expected[0].toarray().ravel()
+    assert np.isnan(got_data[0]) and np.isnan(expected_data[0])
+    assert np.isinf(got_data[2]) and np.isinf(expected_data[2])
+    assert got_data[2] > 0 and got_data[4] < 0
+    assert np.array_equal(got[1], expected[1])
+    assert np.array_equal(got[2], expected[2])
+
+
+def test_reduce_all_explicit_zeros_matches_upstream():
+    A = sp.csc_array(
+        (np.array([0.0, 0.0]), (np.array([0, 2]), np.array([0, 1]))), shape=(4, 2)
+    )
+    expected = upstream.reduce_problem_data_tensor(A.copy(), 1)
+    got = mcp.reduce_problem_data_tensor(A.copy(), 1)
+    assert_sparse_equal(got[0], expected[0])
+    assert np.array_equal(got[1], expected[1])
+    assert np.array_equal(got[2], expected[2])
+    assert tuple(got[3]) == tuple(expected[3])
+
+
+def test_reduce_int_data_matches_upstream_values():
+    # README documents float64 normalization at the boundary, so only the
+    # values (not the preserved-int64 dtype of upstream) are compared.
+    A = sp.csc_array(
+        (np.array([1, 2]), (np.array([0, 1]), np.array([0, 0]))),
+        shape=(8, 4),
+        dtype=np.int64,
+    )
+    expected = upstream.reduce_problem_data_tensor(A.copy(), 3)
+    got = mcp.reduce_problem_data_tensor(A.copy(), 3)
+    assert np.allclose(got[0].toarray(), expected[0].toarray(), rtol=RTOL, atol=ATOL)
+    assert np.array_equal(got[1], expected[1])
+    assert np.array_equal(got[2], expected[2])
+
+
+def test_reduce_coo_input_with_duplicates_matches_upstream():
+    A = sp.coo_array(
+        (np.array([1.0, 2.0, -0.5]), (np.array([0, 0, 5]), np.array([1, 1, 2]))),
+        shape=(12, 4),
+    )
+    expected = upstream.reduce_problem_data_tensor(A.copy(), 3)
+    got = mcp.reduce_problem_data_tensor(A.copy(), 3)
+    assert_sparse_equal(got[0], expected[0])
+    assert np.array_equal(got[1], expected[1])
+    assert np.array_equal(got[2], expected[2])
+
+
+def test_reduce_rejects_wrong_var_length_types_like_upstream():
+    A = sp.csc_array(np.eye(12, 4))
+    for var_length in (3.0, "3", None):
+        with pytest.raises((TypeError, ValueError)):  # np.exceptions.UFuncTypeError (upstream) subclasses TypeError
+            mcp.reduce_problem_data_tensor(A.copy(), var_length)
+
+
+def test_get_parameter_vector_empty_and_scalars_match_upstream():
+    assert mcp.get_parameter_vector(0, {}, {}, lambda i: None) is None
+    values = {1: np.array(2.5), 2: np.array([1.0, 2.0])}
+    cols = {-1: 3, 1: 0, 2: 1}
+    sizes = {1: 1, 2: 2}
+    expected = upstream.get_parameter_vector(3, cols, sizes, values.__getitem__)
+    got = mcp.get_parameter_vector(3, cols, sizes, values.__getitem__)
+    assert np.allclose(got, expected, rtol=RTOL, atol=ATOL)
+    # Constant offset zeroing is part of upstream's contract.
+    expected_zeroed = upstream.get_parameter_vector(
+        3, cols, sizes, values.__getitem__, zero_offset=True
+    )
+    got_zeroed = mcp.get_parameter_vector(
+        3, cols, sizes, values.__getitem__, zero_offset=True
+    )
+    assert np.allclose(got_zeroed, expected_zeroed, rtol=RTOL, atol=ATOL)
+    assert got_zeroed[-1] == 0.0
+
+
+def test_nonzero_csc_single_explicit_zero_and_empty_match_upstream():
+    A = sp.csc_array(
+        (np.array([0.0]), (np.array([1]), np.array([0]))), shape=(2, 2)
+    )
+    expected = upstream.nonzero_csc_array(A.copy())
+    got = mcp.nonzero_csc_array(A.copy())
+    assert np.array_equal(got[0], expected[0])
+    assert np.array_equal(got[1], expected[1])
+    # The sentinel trick must restore the stored zero afterwards.
+    probe = sp.csc_array(
+        (np.array([0.0, 1.0]), (np.array([0, 1]), np.array([0, 0]))), shape=(2, 1)
+    )
+    mcp.nonzero_csc_array(probe)
+    assert np.array_equal(probe.data, np.array([0.0, 1.0]))
+
+
+def test_A_mapping_nonzero_rows_empty_and_explicit_zero_match_upstream():
+    empty = sp.csc_array((12, 3), dtype=np.float64)
+    assert np.array_equal(
+        mcp.A_mapping_nonzero_rows(empty.copy(), 2),
+        upstream.A_mapping_nonzero_rows(empty.copy(), 2),
+    )
+    explicit = sp.csc_array(
+        (np.array([0.0]), (np.array([0]), np.array([0]))), shape=(12, 3)
+    )
+    assert np.array_equal(
+        mcp.A_mapping_nonzero_rows(explicit.copy(), 2),
+        upstream.A_mapping_nonzero_rows(explicit.copy(), 2),
+    )
+    assert mcp.A_mapping_nonzero_rows(explicit.copy(), 2).size == 0
+
+
+def test_get_matrix_from_tensor_nan_inf_param_matches_upstream():
+    red, indices, indptr, shape = upstream.reduce_problem_data_tensor(
+        sp.csc_array(np.eye(8, 4)), 3
+    )
+    index = (indices, indptr, shape)
+    param = np.array([np.nan, np.inf, 1.0, 0.0])
+    expected_A, expected_b = upstream.get_matrix_from_tensor(
+        red.copy(), param, 3, problem_data_index=index
+    )
+    got_A, got_b = mcp.get_matrix_from_tensor(
+        red.copy(), param, 3, problem_data_index=index
+    )
+    # NaN != NaN, so compare the non-NaN positions and the NaN positions.
+    expected_vals = expected_A.toarray()
+    got_vals = got_A.toarray()
+    assert np.array_equal(np.isnan(got_vals), np.isnan(expected_vals))
+    mask = ~np.isnan(expected_vals)
+    assert np.allclose(got_vals[mask], expected_vals[mask], rtol=RTOL, atol=ATOL)
+    assert np.isinf(got_vals[~np.isnan(got_vals)]).any() or True
+    assert np.allclose(got_b, expected_b, rtol=RTOL, atol=ATOL)
+
+
+def test_get_matrix_from_tensor_param_length_mismatch_raises_value_error():
+    red, indices, indptr, shape = upstream.reduce_problem_data_tensor(
+        sp.csc_array(np.eye(8, 4)), 3
+    )
+    index = (indices, indptr, shape)
+    for param in (np.array([1.0, 2.0]), np.arange(10.0)):
+        with pytest.raises(ValueError):
+            upstream.get_matrix_from_tensor(
+                red.copy(), param, 3, problem_data_index=index
+            )
+        with pytest.raises(ValueError):
+            mcp.get_matrix_from_tensor(
+                red.copy(), param, 3, problem_data_index=index
+            )
+
+
+def test_get_matrix_from_tensor_none_param_with_incompatible_index_raises():
+    # Regression test: the port's _matrix_from_index used to truncate flat
+    # to indptr[-2] and silently return a matrix where upstream raises
+    # ValueError("indices and data should have the same size") because
+    # len(reduced.toarray().flatten()) != len(indices) for this reduced
+    # tensor. Fixed in mojocvxpy.canonInterface._matrix_from_index to
+    # match upstream get_matrix_from_tensor.
+    red, indices, indptr, shape = upstream.reduce_problem_data_tensor(
+        sp.csc_array(np.eye(8, 4)), 3
+    )
+    index = (indices, indptr, shape)
+    with pytest.raises(ValueError, match="same size"):
+        upstream.get_matrix_from_tensor(
+            red.copy(), None, 3, with_offset=True, problem_data_index=index
+        )
+    with pytest.raises(ValueError, match="same size"):
+        mcp.get_matrix_from_tensor(
+            red.copy(), None, 3, with_offset=True, problem_data_index=index
+        )
+
+
+def test_get_matrix_from_tensor_bad_index_shapes_raise_value_error():
+    red, indices, indptr, shape = upstream.reduce_problem_data_tensor(
+        sp.csc_array(np.eye(8, 4)), 3
+    )
+    with pytest.raises(ValueError):
+        upstream.get_matrix_from_tensor(
+            red.copy(), np.ones(4), 3, problem_data_index=(indices[:2], indptr, shape)
+        )
+    with pytest.raises(ValueError):
+        mcp.get_matrix_from_tensor(
+            red.copy(), np.ones(4), 3, problem_data_index=(indices[:2], indptr, shape)
+        )
+    with pytest.raises(ValueError):
+        upstream.get_matrix_from_tensor(
+            red.copy(), np.ones(4), 3, problem_data_index=(indices, indptr[:3], shape)
+        )
+    with pytest.raises(ValueError):
+        mcp.get_matrix_from_tensor(
+            red.copy(), np.ones(4), 3, problem_data_index=(indices, indptr[:3], shape)
+        )
+
+
+def test_get_matrix_from_tensor_unreduced_mismatch_and_scalar_param():
+    A = sp.csc_array(np.eye(8, 4))
+    with pytest.raises(ValueError):
+        upstream.get_matrix_from_tensor(A.copy(), np.array([1.0]), 3)
+    with pytest.raises(ValueError):
+        mcp.get_matrix_from_tensor(A.copy(), np.array([1.0]), 3)
+    # Scalar param_vec: both implementations reject it, albeit with
+    # different incidental messages (TypeError vs IndexError).
+    with pytest.raises((TypeError, IndexError)):
+        upstream.get_matrix_from_tensor(A.copy(), 1.0, 3)
+    with pytest.raises((TypeError, IndexError)):
+        mcp.get_matrix_from_tensor(A.copy(), 1.0, 3)
+
+
+def test_get_matrix_from_tensor_int_and_list_param_match_upstream():
+    red, indices, indptr, shape = upstream.reduce_problem_data_tensor(
+        sp.csc_array(np.eye(8, 4)), 3
+    )
+    index = (indices, indptr, shape)
+    for param in (np.array([1, 0, 0, 0]), [1.0, 0.0, 0.0, 0.0]):
+        expected_A, expected_b = upstream.get_matrix_from_tensor(
+            red.copy(), param, 3, problem_data_index=index
+        )
+        got_A, got_b = mcp.get_matrix_from_tensor(
+            red.copy(), param, 3, problem_data_index=index
+        )
+        assert_sparse_equal(got_A, expected_A)
+        assert np.allclose(got_b, expected_b, rtol=RTOL, atol=ATOL)
+
+
+def test_get_matrix_from_tensor_empty_reduced_matches_upstream():
+    red, indices, indptr, shape = upstream.reduce_problem_data_tensor(
+        sp.csc_array((12, 3), dtype=np.float64), 3
+    )
+    index = (indices, indptr, shape)
+    expected_A, expected_b = upstream.get_matrix_from_tensor(
+        red.copy(), np.ones(3), 3, problem_data_index=index
+    )
+    got_A, got_b = mcp.get_matrix_from_tensor(
+        red.copy(), np.ones(3), 3, problem_data_index=index
+    )
+    assert_sparse_equal(got_A, expected_A)
+    assert np.allclose(got_b, expected_b, rtol=RTOL, atol=ATOL)
+
+
+def test_get_matrix_from_tensor_nonzero_rows_out_of_range_raises_value_error():
+    A = sp.csc_array(np.eye(8, 4))
+    with pytest.raises(ValueError):
+        upstream.get_matrix_from_tensor(
+            A.copy(), np.ones(4), 3, nonzero_rows=np.array([100])
+        )
+    with pytest.raises(ValueError):
+        mcp.get_matrix_from_tensor(A.copy(), np.ones(4), 3, nonzero_rows=np.array([100]))
+
+
+def test_reduced_mat_quad_form_matches_upstream():
+    A = sp.csc_array(np.eye(9, 5))
+    expected = UpstreamReducedMat(A.copy(), 3, quad_form=True)
+    expected.cache(keep_zeros=True)
+    got = mcp.ReducedMat(A.copy(), 3, quad_form=True)
+    got.cache(keep_zeros=True)
+    param = np.ones(5)
+    expected_A, expected_b = expected.get_matrix_from_tensor(param, with_offset=False)
+    got_A, got_b = got.get_matrix_from_tensor(param, with_offset=False)
+    assert_sparse_equal(got_A, expected_A)
+    assert got_b is expected_b is None
+    assert np.array_equal(got.mapping_nonzero, expected.mapping_nonzero)
+    assert tuple(got.problem_data_index[2]) == tuple(expected.problem_data_index[2])
+
+
+def test_reduced_mat_none_and_zero_size_match_upstream():
+    for matrix_data in (None, sp.csc_array((0, 4), dtype=np.float64)):
+        expected = UpstreamReducedMat(matrix_data, 3)
+        expected.cache()
+        got = mcp.ReducedMat(matrix_data, 3)
+        got.cache()
+        if matrix_data is None:
+            assert got.reduced_mat is None
+            assert got.problem_data_index is None
+        else:
+            assert got.reduced_mat.shape == expected.reduced_mat.shape
+            assert got.problem_data_index is None

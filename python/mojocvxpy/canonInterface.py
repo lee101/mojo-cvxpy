@@ -235,6 +235,11 @@ def _matrix_from_index(flat, problem_data_index, with_offset):
     indices = np.asarray(indices)
     indptr = np.asarray(indptr)
     flat = np.asarray(flat, dtype=np.float64)
+    # Match upstream get_matrix_from_tensor, which passes flat straight to
+    # sp.csc_array((flat, indices, indptr)) and raises ValueError
+    # ("indices and data should have the same size") on a length mismatch.
+    if flat.size != indices.size or (indptr.size and int(indptr[-1]) != flat.size):
+        raise ValueError("indices and data should have the same size")
     if with_offset:
         split = int(indptr[-2])
         A = sp.csc_array(
