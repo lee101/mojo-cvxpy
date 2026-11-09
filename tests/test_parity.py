@@ -229,9 +229,9 @@ def test_apply_accepts_noncontiguous_parameter_buffer():
     assert np.array_equal(got.toarray().ravel(), param)
 
 
-def test_apply_reduced_tensor_parallel_threshold_matches_upstream():
+@pytest.mark.parametrize("entries_per_row", [5, 16])
+def test_apply_reduced_tensor_parallel_threshold_matches_upstream(entries_per_row):
     rows = 70_000
-    entries_per_row = 5
     nonzeros = rows * entries_per_row
     indptr = np.arange(
         0, nonzeros + 1, entries_per_row, dtype=np.int32
@@ -602,7 +602,7 @@ def test_get_matrix_from_tensor_nan_inf_param_matches_upstream():
     assert np.array_equal(np.isnan(got_vals), np.isnan(expected_vals))
     mask = ~np.isnan(expected_vals)
     assert np.allclose(got_vals[mask], expected_vals[mask], rtol=RTOL, atol=ATOL)
-    assert np.isinf(got_vals[~np.isnan(got_vals)]).any() or True
+    assert np.array_equal(np.isinf(got_vals), np.isinf(expected_vals))
     assert np.allclose(got_b, expected_b, rtol=RTOL, atol=ATOL)
 
 

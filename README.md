@@ -80,9 +80,9 @@ CVXPY 1.9.2, and Python 3.13.14. Times are the best of three warm runs on a
 
 | case | mojo-cvxpy | CVXPY | result |
 | --- | ---: | ---: | ---: |
-| reduce problem-data tensor (500k triplets) | 63.99 ms | 74.23 ms | 1.16x faster |
-| apply parameter vector and rebuild CSC | 0.38 ms | 4.52 ms | 11.84x faster |
-| 20 cached parameter applications | 27.91 ms | 174.95 ms | 6.27x faster |
+| reduce problem-data tensor (500k triplets) | 51.00 ms | 75.26 ms | 1.48x faster |
+| apply parameter vector and rebuild CSC | 1.70 ms | 5.26 ms | 3.10x faster |
+| 20 cached parameter applications | 64.07 ms | 189.68 ms | 2.96x faster |
 
 The one-time condensation preserves SciPy's native 32- or 64-bit index buffers
 across the ABI. For CSC input, Mojo counts source rows and scatters directly
